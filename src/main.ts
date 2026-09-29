@@ -56,22 +56,6 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		return GetConfigFields()
 	}
 
-	updateActions(): void {
-		UpdateActions(this)
-	}
-
-	updateFeedbacks(): void {
-		UpdateFeedbacks(this)
-	}
-
-	updatePresets(): void {
-		UpdatePresets(this)
-	}
-
-	updateVariableDefinitions(): void {
-		UpdateVariableDefinitions(this)
-	}
-
 	public sendControl(
 		command: 'Close' | 'Open' | 'Toggle' | 'Reset Latch' | 'Reset Counter' | 'Reset Usage',
 		channel: number,
@@ -248,5 +232,21 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		if (value === undefined || value === null) return ''
 		if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
 		return JSON.stringify(value)
+	}
+
+	updateActions(): void {
+		UpdateActions(this)
+	}
+
+	updateFeedbacks(): void {
+		UpdateFeedbacks(this)
+	}
+
+	updatePresets(): void {
+		UpdatePresets(this)
+	}
+
+	updateVariableDefinitions(): void {
+		UpdateVariableDefinitions(this)
 	}
 }
