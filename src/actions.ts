@@ -67,6 +67,9 @@ export function UpdateActions(self: ModuleInstance): void {
 			],
 			callback: async (event) => {
 				self.sendControl(event.options.command, event.options.channel)
+				self.setVariableValues({
+					[`output${event.options.channel}State`]: event.options.command === 'Close' ? '1' : '0',
+				})
 			},
 		},
 

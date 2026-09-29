@@ -33,7 +33,7 @@ export type VariablesSchema = {
 
 export function UpdateVariableDefinitions(self: ModuleInstance): void {
 	self.setVariableDefinitions({
-		model: { name: 'Model' },
+		model: { name: 'JNIOR Model' },
 		version: { name: 'JANOS Version' },
 		serialNumber: { name: 'Serial Number' },
 		timestamp: { name: 'Monitor Timestamp' },
