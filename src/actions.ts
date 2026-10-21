@@ -32,7 +32,7 @@ export type ActionsSchema = {
 	console_send: {
 		options: {
 			command: string
-			lineEnding: '\r' | '\n' | '\r\n'
+			lineEnding: 'cr' | 'lf' | 'crlf'
 		}
 	}
 }
@@ -66,10 +66,22 @@ export function UpdateActions(self: ModuleInstance): void {
 				},
 			],
 			callback: async (event) => {
+				if (event.options.command !== 'Toggle') {
+					self.log('debug', `Setting relay ${event.options.channel} state: ${event.options.command}`)
+					self.setVariableValues({
+						[`output${event.options.channel}State`]: event.options.command === 'Close' ? '1' : '0',
+					})
+				} else {
+					if (self.getVariableValue(`output${event.options.channel}State`) === '1') {
+						self.log('debug', `Toggling relay ${event.options.channel} state: Open`)
+						self.setVariableValues({ [`output${event.options.channel}State`]: '0' })
+					} else {
+						self.log('debug', `Toggling relay ${event.options.channel} state: Close`)
+						self.setVariableValues({ [`output${event.options.channel}State`]: '1' })
+					}
+				}
 				self.sendControl(event.options.command, event.options.channel)
-				self.setVariableValues({
-					[`output${event.options.channel}State`]: event.options.command === 'Close' ? '1' : '0',
-				})
+				self.checkFeedbacks('fbkOutputRelayState')
 			},
 		},
 
@@ -98,6 +110,7 @@ export function UpdateActions(self: ModuleInstance): void {
 				},
 			],
 			callback: async (event) => {
+				self.log('debug', `Pulsing relay ${event.options.channel} for ${event.options.duration} ms`)
 				self.sendControl('Close', event.options.channel, event.options.duration)
 			},
 		},
@@ -113,7 +126,7 @@ export function UpdateActions(self: ModuleInstance): void {
 					label: 'Input Channel',
 					default: 1,
 					min: 1,
-					max: 12,
+					max: 28,
 					step: 1,
 				},
 				{
@@ -127,6 +140,10 @@ export function UpdateActions(self: ModuleInstance): void {
 				},
 			],
 			callback: async (event) => {
+				self.log(
+					'debug',
+					`Resetting latch for input ${event.options.channel} with duration ${event.options.latchTime} ms`,
+				)
 				self.sendControl('Reset Latch', event.options.channel, event.options.latchTime)
 			},
 		},
@@ -142,11 +159,12 @@ export function UpdateActions(self: ModuleInstance): void {
 					label: 'Input Channel',
 					default: 1,
 					min: 1,
-					max: 12,
+					max: 28,
 					step: 1,
 				},
 			],
 			callback: async (event) => {
+				self.log('debug', `Resetting counter for input ${event.options.channel}`)
 				self.sendControl('Reset Counter', event.options.channel)
 			},
 		},
@@ -155,7 +173,7 @@ export function UpdateActions(self: ModuleInstance): void {
 			name: 'Control: Reset Usage',
 			sortName: '105 Control: Reset Usage',
 			description:
-				'Resets the Usage Meter for the selected I/O port. The mix of Inputs and Outputs will vary for each model; the channels here are numbered beginning with Inputs, and then Outputs.',
+				'Resets the Usage Meter for the selected I/O port. The mix of Inputs and Outputs will vary for each model; channels are numbered beginning with Inputs, and then Outputs.',
 			options: [
 				{
 					id: 'channel',
@@ -163,11 +181,12 @@ export function UpdateActions(self: ModuleInstance): void {
 					label: 'I/O Channel',
 					default: 1,
 					min: 1,
-					max: 24,
+					max: 32,
 					step: 1,
 				},
 			],
 			callback: async (event) => {
+				self.log('debug', `Resetting usage for I/O channel ${event.options.channel}`)
 				self.sendControl('Reset Usage', event.options.channel)
 			},
 		},
@@ -181,23 +200,26 @@ export function UpdateActions(self: ModuleInstance): void {
 					id: 'command',
 					type: 'textinput',
 					label: 'Command',
-					default: 'Hello World',
+					default: '',
+					useVariables: true,
 				},
 				{
 					id: 'lineEnding',
 					type: 'dropdown',
 					label: 'Line Ending',
 					choices: [
-						{ id: '\r', label: 'CR' },
-						{ id: '\n', label: 'LF' },
-						{ id: '\r\n', label: 'CR+LF' },
+						{ id: 'cr', label: 'CR' },
+						{ id: 'lf', label: 'LF' },
+						{ id: 'crlf', label: 'CR+LF' },
 					],
-					default: '\r\n',
+					default: 'crlf',
 				},
 			],
 			callback: async (event) => {
 				const cmd = event.options.command ?? ''
-				const eol = event.options.lineEnding ?? '\r'
+				const lineEndings = { cr: '\r', lf: '\n', crlf: '\r\n' } as const
+				const eol = lineEndings[event.options.lineEnding ?? 'cr']
+				self.log('debug', `Sending console command: [${cmd}] with line ending: ${event.options.lineEnding}`)
 				self.sendConsoleCommand(cmd, eol)
 			},
 		},
