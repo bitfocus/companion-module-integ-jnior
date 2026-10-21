@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto'
-import { Socket } from 'node:net'
-import { InstanceBase, InstanceStatus, type SomeCompanionConfigField } from '@companion-module/base'
+import { InstanceBase, InstanceStatus, TCPHelper, type SomeCompanionConfigField } from '@companion-module/base'
 import { GetConfigFields, type ModuleConfig, type ModuleSecrets } from './config.js'
 import { UpdateVariableDefinitions, type VariablesSchema } from './variables.js'
 import { UpgradeScripts } from './upgrades.js'
 import { UpdateActions, type ActionsSchema } from './actions.js'
 import { UpdateFeedbacks, type FeedbacksSchema } from './feedbacks.js'
 import { UpdatePresets } from './presets.js'
+
+const CONNECT_TIMEOUT_MS = 15_000
+const AUTHENTICATION_TIMEOUT_MS = 15_000
+const TCP_KEEPALIVE_INITIAL_DELAY_MS = 10_000
+const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 15_000, 30_000, 60_000]
 
 export type ModuleSchema = {
 	config: ModuleConfig
@@ -21,9 +25,12 @@ export { UpgradeScripts }
 export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 	config!: ModuleConfig // Setup in init()
 	secrets!: ModuleSecrets
-	private socket: Socket | undefined
+	private tcp: TCPHelper | undefined
 	private receiveBuffer = Buffer.alloc(0)
 	private authenticated = false
+	private connectionTimeout: NodeJS.Timeout | undefined
+	private reconnectTimer: NodeJS.Timeout | undefined
+	private reconnectAttempt = 0
 
 	constructor(internal: unknown) {
 		super(internal)
@@ -48,6 +55,7 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		this.config = config
 		this.secrets = secrets
 		this.updateActions()
+		this.updateFeedbacks()
 		this.initConnection()
 	}
 
@@ -98,41 +106,96 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 		}
 
 		this.updateStatus(InstanceStatus.Connecting)
-		this.socket = new Socket()
-		this.socket.on('connect', () => {
+		const tcp = new TCPHelper(this.config.host, this.config.port, { reconnect: false })
+		this.tcp = tcp
+		tcp._socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS)
+		tcp.on('connect', () => {
+			this.clearConnectionTimeout()
 			this.authenticated = false
 			this.receiveBuffer = Buffer.alloc(0)
 			this.updateStatus(InstanceStatus.Connecting, 'Connected; authenticating')
+			this.startConnectionTimeout(tcp, AUTHENTICATION_TIMEOUT_MS, 'JMP authentication timed out')
 			this.sendMessage({ Message: '' })
 		})
-		this.socket.on('data', (data) => this.handleData(data))
-		this.socket.on('error', (error) => {
+		tcp.on('data', (data) => this.handleData(data))
+		tcp.on('error', (error) => {
 			this.log('error', `Connection error: ${error.message}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, error.message)
 		})
-		this.socket.on('close', () => {
+		tcp.on('status_change', (status, message) => {
+			if (status === InstanceStatus.Ok) return
+			if (this.tcp !== tcp) return
+
+			this.clearConnectionTimeout()
 			this.authenticated = false
-			this.updateStatus(InstanceStatus.Disconnected, 'Connection closed')
+			this.receiveBuffer = Buffer.alloc(0)
+			this.updateStatus(status, message)
+			if (status === InstanceStatus.Connecting) {
+				this.startConnectionTimeout(tcp, CONNECT_TIMEOUT_MS, 'TCP connection timed out')
+			} else {
+				this.scheduleReconnect()
+			}
 		})
-		this.socket.connect(this.config.port, this.config.host)
+		this.startConnectionTimeout(tcp, CONNECT_TIMEOUT_MS, 'TCP connection timed out')
 	}
 
 	private destroyConnection(): void {
-		this.socket?.destroy()
-		this.socket = undefined
+		this.clearConnectionTimeout()
+		if (this.reconnectTimer) {
+			clearTimeout(this.reconnectTimer)
+			this.reconnectTimer = undefined
+		}
+		this.tcp?.destroy()
+		this.tcp = undefined
 		this.authenticated = false
 		this.receiveBuffer = Buffer.alloc(0)
 	}
 
+	private startConnectionTimeout(tcp: TCPHelper, timeoutMs: number, message: string): void {
+		this.clearConnectionTimeout()
+		this.connectionTimeout = setTimeout(() => {
+			this.connectionTimeout = undefined
+			if (this.tcp !== tcp) return
+
+			this.log('warn', `${message}; retrying connection`)
+			this.updateStatus(InstanceStatus.ConnectionFailure, message)
+			tcp.destroy()
+			this.tcp = undefined
+			this.authenticated = false
+			this.receiveBuffer = Buffer.alloc(0)
+			this.scheduleReconnect()
+		}, timeoutMs)
+	}
+
+	private scheduleReconnect(): void {
+		if (this.reconnectTimer) return
+
+		const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)]
+		this.reconnectAttempt = Math.min(this.reconnectAttempt + 1, RECONNECT_DELAYS_MS.length - 1)
+		this.log('warn', `Retrying connection in ${delay / 1000} seconds`)
+		this.reconnectTimer = setTimeout(() => {
+			this.reconnectTimer = undefined
+			this.initConnection()
+		}, delay)
+	}
+
+	private clearConnectionTimeout(): void {
+		if (this.connectionTimeout) {
+			clearTimeout(this.connectionTimeout)
+			this.connectionTimeout = undefined
+		}
+	}
+
 	private sendMessage(message: Record<string, unknown>): void {
-		if (!this.socket || !this.socket.writable) {
+		if (!this.tcp?.isConnected) {
 			this.log('warn', 'Cannot send JMP message while disconnected')
 			return
 		}
 
 		const json = JSON.stringify(message)
 		const frame = `[${Buffer.byteLength(json, 'utf8')},${json}]`
-		this.socket.write(frame)
+		if (!this.tcp.send(frame)) {
+			this.log('warn', 'Cannot send JMP message while disconnected')
+		}
 	}
 
 	private handleData(data: Buffer): void {
@@ -200,7 +263,9 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			return
 		}
 		if (type === 'Authenticated') {
+			this.clearConnectionTimeout()
 			this.authenticated = true
+			this.reconnectAttempt = 0
 			this.updateStatus(InstanceStatus.Ok)
 			return
 		}
@@ -215,17 +280,18 @@ export default class ModuleInstance extends InstanceBase<ModuleSchema> {
 			timestamp: this.toVariableString(message.Timestamp),
 		}
 		const inputs = Array.isArray(message.Inputs) ? message.Inputs : []
-		for (let index = 0; index < 8; index++) {
+		for (let index = 0; index < 28; index++) {
 			const input = inputs[index] as Record<string, unknown> | undefined
 			values[`input${index + 1}State`] = this.toVariableString(input?.State)
 			values[`input${index + 1}Count`] = this.toVariableString(input?.Count)
 		}
 		const outputs = Array.isArray(message.Outputs) ? message.Outputs : []
-		for (let index = 0; index < 8; index++) {
+		for (let index = 0; index < Math.min(outputs.length, 20); index++) {
 			const output = outputs[index] as Record<string, unknown> | undefined
 			values[`output${index + 1}State`] = this.toVariableString(output?.State)
 		}
 		this.setVariableValues(values)
+		this.checkFeedbacks('fbkInputRelayState', 'fbkOutputRelayState')
 	}
 
 	private toVariableString(value: unknown): string {

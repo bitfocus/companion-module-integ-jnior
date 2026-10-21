@@ -13,6 +13,13 @@ export type ModuleSecrets = {
 export function GetConfigFields(): SomeCompanionConfigField[] {
 	return [
 		{
+			type: 'static-text',
+			id: 'info',
+			label: 'Device Configuration',
+			value: `Enter the JNIOR device IP address and Target port. Target Port should remain 9220 unless you have specifically configured the JANOS Management Protocol (JMP) server otherwise. "JMP Server Configuration" must be enabled from the Web UI, with the "Server Enabled" checkbox ticked.  The login credentials are the same as those used to connect to the JNIOR's Web UI.`,
+			width: 12,
+		},
+		{
 			type: 'textinput',
 			id: 'host',
 			label: 'Target IP',
